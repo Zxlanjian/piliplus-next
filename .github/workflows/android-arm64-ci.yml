@@ -22,25 +22,135 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Setup Android SDK & NDK r27
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android NDK 27.2.12479018 & CMake 3.22.1
+      - name: Install Android SDK 36, NDK r27 & CMake 3.22.1 via Preinstalled sdkmanager
         run: |
-          sdkmanager --install "ndk;27.2.12479018" "cmake;3.22.1" "platforms;android-35" "build-tools;35.0.0"
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager | sort -V | tail -n 1)
+          echo "Using sdkmanager: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" --install \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;27.2.12479018" \
+            "cmake;3.22.1"
 
-      - name: Setup Gradle Cache
-        uses: gradle/actions/setup-gradle@v4
+      - name: Normalize Project Directory Layout (Supports Flat or Standard Repo Layout)
+        run: |
+          mkdir -p app/src/main/cpp
+          mkdir -p app/src/main/kotlin/com/piliplus/miuix
+
+          # If files were uploaded directly to the repo root, copy them into app/ module layout
+          [ -f "CMakeLists.txt" ] && cp -f "CMakeLists.txt" "app/src/main/cpp/CMakeLists.txt"
+          [ -f "pili_core_arm64.S" ] && cp -f "pili_core_arm64.S" "app/src/main/cpp/pili_core_arm64.S"
+          [ -f "pili_jni_bridge.c" ] && cp -f "pili_jni_bridge.c" "app/src/main/cpp/pili_jni_bridge.c"
+          [ -f "PiliMiuixApp.kt" ] && cp -f "PiliMiuixApp.kt" "app/src/main/kotlin/com/piliplus/miuix/PiliMiuixApp.kt"
+
+          if [ -f "build.gradle.kts" ] && grep -q 'namespace = "com.piliplus.miuix"' "build.gradle.kts"; then
+            cp -f "build.gradle.kts" "app/build.gradle.kts"
+            cat << 'EOF' > build.gradle.kts
+          plugins {
+              id("com.android.application") version "9.4.1" apply false
+              id("org.jetbrains.kotlin.android") version "2.4.20" apply false
+              id("org.jetbrains.kotlin.plugin.compose") version "2.4.20" apply false
+              id("org.jetbrains.kotlin.plugin.serialization") version "2.4.20" apply false
+              id("org.jetbrains.compose") version "1.12.0" apply false
+          }
+          EOF
+          fi
+
+          if [ ! -f "settings.gradle.kts" ]; then
+            cat << 'EOF' > settings.gradle.kts
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "PiliPlus-Miuix"
+          include(":app")
+          EOF
+          fi
+
+          if [ ! -f "gradle.properties" ]; then
+            cat << 'EOF' > gradle.properties
+          org.gradle.jvmargs=-Xmx4096m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style=official
+          android.nonTransitiveRClass=true
+          EOF
+          fi
+
+          if [ ! -f "app/src/main/AndroidManifest.xml" ]; then
+            cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <application
+                  android:allowBackup="true"
+                  android:label="PiliPlus Miuix"
+                  android:supportsRtl="true"
+                  android:hardwareAccelerated="true"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|screenLayout|keyboardHidden">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+          fi
+
+          if [ ! -f "app/src/main/kotlin/com/piliplus/miuix/MainActivity.kt" ]; then
+            cat << 'EOF' > app/src/main/kotlin/com/piliplus/miuix/MainActivity.kt
+          package com.piliplus.miuix
+
+          import android.os.Bundle
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.setContent
+          import androidx.activity.enableEdgeToEdge
+
+          class MainActivity : ComponentActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  enableEdgeToEdge()
+                  setContent {
+                      PiliMiuixApp()
+                  }
+              }
+          }
+          EOF
+          fi
 
       - name: Verify ARM64 Assembly Syntax with NDK Clang
         run: |
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           NDK_CLANG="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
           "$NDK_CLANG" -march=armv8-a+simd+crypto -c app/src/main/cpp/pili_core_arm64.S -o /tmp/pili_core_arm64.o
-          ls -lh /tmp/pili_core_arm64.o
+          "$NDK_CLANG" -O3 -c app/src/main/cpp/pili_jni_bridge.c -o /tmp/pili_jni_bridge.o
+          ls -lh /tmp/pili_core_arm64.o /tmp/pili_jni_bridge.o
+
+      - name: Setup Gradle 9.7.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.7.1'
 
       - name: Build Release APK (arm64-v8a)
         run: |
-          chmod +x gradlew || true
           gradle assembleRelease --stacktrace
 
       - name: Upload arm64-v8a Release APK Artifact
@@ -48,4 +158,4 @@ jobs:
         with:
           name: PiliPlus-Miuix-arm64-v8a-Release
           path: app/build/outputs/apk/release/*.apk
-          if-no-files-found: warn
+          if-no-files-found: error
