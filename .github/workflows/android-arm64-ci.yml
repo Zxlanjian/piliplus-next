@@ -1,0 +1,51 @@
+name: Build PiliPlus-Miuix (Android arm64-v8a)
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-arm64-apk:
+    name: Compile AArch64 Assembly & Build Miuix APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Android SDK & NDK r27
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK 27.2.12479018 & CMake 3.22.1
+        run: |
+          sdkmanager --install "ndk;27.2.12479018" "cmake;3.22.1" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Setup Gradle Cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Verify ARM64 Assembly Syntax with NDK Clang
+        run: |
+          NDK_CLANG="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
+          "$NDK_CLANG" -march=armv8-a+simd+crypto -c app/src/main/cpp/pili_core_arm64.S -o /tmp/pili_core_arm64.o
+          ls -lh /tmp/pili_core_arm64.o
+
+      - name: Build Release APK (arm64-v8a)
+        run: |
+          chmod +x gradlew || true
+          gradle assembleRelease --stacktrace
+
+      - name: Upload arm64-v8a Release APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PiliPlus-Miuix-arm64-v8a-Release
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: warn
